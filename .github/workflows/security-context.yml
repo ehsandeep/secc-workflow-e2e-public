@@ -5,15 +5,14 @@ on:
   schedule:
     - cron: "17 4 * * 1"
   push:
-    paths:
-      - .github/workflows/security-context.yml
+    paths: [.github/workflows/security-context.yml]
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: security-context-refresh
+  group: security-context
   cancel-in-progress: true
 
 jobs:
@@ -22,41 +21,37 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Generate SECURITY_CONTEXT.md for this HEAD
+
+      # Analyze this commit on securitycontext.dev, wait for the result, and
+      # download it. The run's own token authorizes private repositories —
+      # no secrets to configure.
+      - name: Generate SECURITY_CONTEXT.md
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          NEO_API_KEY: ${{ secrets.NEO_API_KEY }}
         run: |
-          expected="$(git rev-parse HEAD)"
-          repository="$GITHUB_REPOSITORY"
-          api="https://qa.securitycontext.dev/api/v1/context"
-          # The run's own repo-scoped token authorizes private repositories;
-          # an API key, when configured, is honored as well.
-          auth=(-H "X-GitHub-Token: $GITHUB_TOKEN")
-          if [ -n "$NEO_API_KEY" ]; then
-            auth+=(-H "X-Api-Key: $NEO_API_KEY")
-          fi
+          sc() { curl --fail-with-body -sS -H "X-GitHub-Token: $GITHUB_TOKEN" "$@"; }
+          base="https://qa.securitycontext.dev"
+          head="$(git rev-parse HEAD)"
 
-          request=(--fail-with-body --silent --show-error "${auth[@]}")
+          sc -X POST "$base/api/v1/context?wait=60" -H "Content-Type: application/json" \
+             -H "X-Secc-Client: github-action" --data "{\"repo\":\"$GITHUB_REPOSITORY\"}" >/dev/null
 
-          curl "${request[@]}" -H "Content-Type: application/json" -H "X-Secc-Client: github-action" -X POST "$api?wait=60" --data "$(jq -nc --arg repo "$repository" '{repo: $repo}')" >/dev/null
-
-          for attempt in {1..120}; do
-            response="$(curl "${request[@]}" "$api/$repository")"
-            analyzed="$(jq -r '.summary.head_sha // empty' <<<"$response")"
-            status="$(jq -r '.status // empty' <<<"$response")"
-            if [ "$status" = "ready" ] && [ "$analyzed" = "$expected" ]; then
-              curl "${request[@]}" --location "https://qa.securitycontext.dev/r/$repository.md" --output SECURITY_CONTEXT.md
-              exit 0
-            fi
+          for _ in {1..120}; do
+            state="$(sc "$base/api/v1/context/$GITHUB_REPOSITORY")"
+            status="$(jq -r .status <<<"$state")"
             if [ "$status" = "error" ]; then
-              jq -r '.error // "Security Context refresh failed"' <<<"$response" >&2
+              jq -r '.error // "analysis failed"' <<<"$state" >&2
               exit 1
+            fi
+            if [ "$status" = "ready" ] && [ "$(jq -r '.summary.head_sha // empty' <<<"$state")" = "$head" ]; then
+              sc -L "$base/r/$GITHUB_REPOSITORY.md" -o SECURITY_CONTEXT.md
+              exit 0
             fi
             sleep 15
           done
-          echo "Timed out waiting for Security Context to analyze $expected" >&2
+          echo "Timed out waiting for analysis of $head" >&2
           exit 1
+
       - name: Open an update pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
