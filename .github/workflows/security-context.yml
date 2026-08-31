@@ -1,0 +1,67 @@
+name: Maintain security context
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+  push:
+    paths:
+      - .github/workflows/security-context.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: security-context-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Generate SECURITY_CONTEXT.md for this HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NEO_API_KEY: ${{ secrets.NEO_API_KEY }}
+        run: |
+          expected="$(git rev-parse HEAD)"
+          repository="$GITHUB_REPOSITORY"
+          api="https://qa.securitycontext.dev/api/v1/context"
+          # The run's own repo-scoped token authorizes private repositories;
+          # an API key, when configured, is honored as well.
+          auth=(-H "X-GitHub-Token: $GITHUB_TOKEN")
+          if [ -n "$NEO_API_KEY" ]; then
+            auth+=(-H "X-Api-Key: $NEO_API_KEY")
+          fi
+
+          request=(--fail-with-body --silent --show-error "${auth[@]}")
+
+          curl "${request[@]}" -H "Content-Type: application/json" -H "X-Secc-Client: github-action" -X POST "$api?wait=60" --data "$(jq -nc --arg repo "$repository" '{repo: $repo}')" >/dev/null
+
+          for attempt in {1..120}; do
+            response="$(curl "${request[@]}" "$api/$repository")"
+            analyzed="$(jq -r '.summary.head_sha // empty' <<<"$response")"
+            status="$(jq -r '.status // empty' <<<"$response")"
+            if [ "$status" = "ready" ] && [ "$analyzed" = "$expected" ]; then
+              curl "${request[@]}" --location "https://qa.securitycontext.dev/r/$repository.md" --output SECURITY_CONTEXT.md
+              exit 0
+            fi
+            if [ "$status" = "error" ]; then
+              jq -r '.error // "Security Context refresh failed"' <<<"$response" >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "Timed out waiting for Security Context to analyze $expected" >&2
+          exit 1
+      - name: Open an update pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: security-context/refresh
+          commit-message: "chore: refresh security context"
+          title: "chore: refresh security context"
+          body: "Refreshes SECURITY_CONTEXT.md with the latest analysis of this repository."
+          add-paths: SECURITY_CONTEXT.md
