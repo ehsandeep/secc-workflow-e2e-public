@@ -60,23 +60,60 @@ jobs:
       # header moved (timestamps, analyzed commit, commit counts), restore the
       # committed file so no PR is opened and any header-only PR closes.
       - name: Skip the update unless the analysis changed
+        id: report
         run: |
-          [ -n "$(git ls-files SECURITY_CONTEXT.md)" ] || exit 0
-          if git diff --quiet -I '^<!-- Generated' -I '^_Generated' -I '^_Analyzed commit' -I '^- Commits analyzed' -I '^- Commits flagged' -- SECURITY_CONTEXT.md; then
+          changed=true
+          if [ -n "$(git ls-files SECURITY_CONTEXT.md)" ] && git diff --quiet -I '^<!-- Generated' -I '^_Generated' -I '^_Analyzed commit' -I '^- Commits analyzed' -I '^- Commits flagged' -- SECURITY_CONTEXT.md; then
             git checkout -- SECURITY_CONTEXT.md
+            changed=false
           fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      # Point the repository's agent instructions at the file, when it has any.
+      # Never create one: adding an agent instructions file uninvited is a
+      # bigger footprint than this warrants.
+      - name: Reference the context from agent instructions
+        id: agents
+        env:
+          REPORT_CHANGED: ${{ steps.report.outputs.changed }}
+        run: |
+          line="See SECURITY_CONTEXT.md for this repo's known vulnerabilities and recurring weak spots. Check it before writing or reviewing security-sensitive code."
+          touched=""
+          paths="SECURITY_CONTEXT.md"
+          for f in CLAUDE.md AGENTS.md; do
+            if [ ! -f "$f" ]; then continue; fi
+            paths="$(printf '%s\n%s' "$paths" "$f")"
+            if grep -q "SECURITY_CONTEXT.md" "$f"; then continue; fi
+            printf '\n%s\n' "$line" >> "$f"
+            if [ -n "$touched" ]; then touched="$touched and $f"; else touched="$f"; fi
+          done
+          echo "touched=$touched" >> "$GITHUB_OUTPUT"
+          # Title the pull request for what it actually carries: when the
+          # analysis is unchanged, the only edit is the agent-instructions line.
+          if [ "$REPORT_CHANGED" = "false" ]; then
+            echo "subject=chore: reference security context from agent instructions" >> "$GITHUB_OUTPUT"
+          else
+            echo "subject=chore: refresh security context" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "paths<<SC_EOF"
+            echo "$paths"
+            echo "SC_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Open an update pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           branch: security-context/refresh
-          commit-message: "chore: refresh security context"
-          title: "chore: refresh security context"
+          commit-message: ${{ steps.agents.outputs.subject }}
+          title: ${{ steps.agents.outputs.subject }}
           body: |
-            Refreshes `SECURITY_CONTEXT.md` — this repository's security-fix history as working context, so agents and reviewers don't reintroduce fixes that already shipped.
+            Refreshes `SECURITY_CONTEXT.md`, this repository's security-fix history as working context, so agents and reviewers don't reintroduce fixes that already shipped.
 
             ${{ steps.context.outputs.visibility == 'private' && format('[Read the updated file]({0}/{1}/blob/security-context/refresh/SECURITY_CONTEXT.md)', github.server_url, github.repository) || format('[Full report for this repository](https://securitycontext.dev/r/{0})', github.repository) }}
 
+            ${{ steps.agents.outputs.touched != '' && format('Also adds a one-line reference to {0} so your coding agent picks this up automatically.', steps.agents.outputs.touched) || 'Tip: reference `SECURITY_CONTEXT.md` from your agent instructions file (`CLAUDE.md` or `AGENTS.md`) so your coding agent reads it automatically.' }}
+
             ---
-            _Security fixes tend to come back — [Security Context](https://securitycontext.dev) keeps the old ones where your agent can see them. Opened by the `security-context` workflow in this repo; it runs weekly, so edit or delete `.github/workflows/security-context.yml` to change that._
-          add-paths: SECURITY_CONTEXT.md
+            _Your agent doesn't know this repo's security history. [Security Context](https://securitycontext.dev) keeps it where your agent can see it, so old vulnerabilities and their variants don't come back in new code._
+          add-paths: ${{ steps.agents.outputs.paths }}
