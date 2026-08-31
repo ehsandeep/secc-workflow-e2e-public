@@ -68,5 +68,11 @@ jobs:
           branch: security-context/refresh
           commit-message: "chore: refresh security context"
           title: "chore: refresh security context"
-          body: "Refreshes SECURITY_CONTEXT.md with the latest analysis of this repository."
+          body: |
+            Refreshes `SECURITY_CONTEXT.md` — this repository's security-fix history as working context, so agents and reviewers don't reintroduce fixes that already shipped.
+
+            Full report: https://securitycontext.dev/r/${{ github.repository }}
+
+            ---
+            _Kept current by [Security Context](https://securitycontext.dev) — a free security index of GitHub repositories._
           add-paths: SECURITY_CONTEXT.md
