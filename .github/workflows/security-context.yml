@@ -52,6 +52,16 @@ jobs:
           echo "Timed out waiting for analysis of $head" >&2
           exit 1
 
+      # A pull request should mean the analysis changed. When only the volatile
+      # header moved (timestamps, analyzed commit, commit counts), restore the
+      # committed file so no PR is opened and any header-only PR closes.
+      - name: Skip the update unless the analysis changed
+        run: |
+          [ -n "$(git ls-files SECURITY_CONTEXT.md)" ] || exit 0
+          if git diff --quiet -I '^<!-- Generated' -I '^_Generated' -I '^_Analyzed commit' -I '^- Commits analyzed' -I '^- Commits flagged' -- SECURITY_CONTEXT.md; then
+            git checkout -- SECURITY_CONTEXT.md
+          fi
+
       - name: Open an update pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
