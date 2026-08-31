@@ -34,8 +34,8 @@ jobs:
           base="https://qa.securitycontext.dev"
           head="$(git rev-parse HEAD)"
 
-          sc -X POST "$base/api/v1/context?wait=60" -H "Content-Type: application/json" \\
-             -H "X-Secc-Client: github-action" --data "{\\"repo\\":\\"$GITHUB_REPOSITORY\\",\\"head\\":\\"$head\\"}" >/dev/null
+          sc -X POST "$base/api/v1/context?wait=60" -H "Content-Type: application/json" \
+             -H "X-Secc-Client: github-action" --data "{\"repo\":\"$GITHUB_REPOSITORY\",\"head\":\"$head\"}" >/dev/null
 
           for _ in {1..120}; do
             state="$(sc "$base/api/v1/context/$GITHUB_REPOSITORY")"
